@@ -7,6 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      
+      - name: Install dependencies
+        run: npm install
+        
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
