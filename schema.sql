@@ -1,0 +1,18 @@
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  phone_number TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  role TEXT DEFAULT 'user'
+);
+
+DROP TABLE IF EXISTS models;
+CREATE TABLE models (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  author TEXT NOT NULL,
+  likes INTEGER DEFAULT 0,
+  image_url TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
