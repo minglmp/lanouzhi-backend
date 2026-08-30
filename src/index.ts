@@ -55,6 +55,23 @@ app.get('/api/models', async (c) => {
 });
 
 // ==========================================
+// API ดึงข้อมูลโมเดลรายชิ้น (สำหรับหน้า Detail)
+// ==========================================
+app.get('/api/models/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const db = c.env.makerspace_db;
+    const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
+    
+    if (!model) return c.json({ message: 'Model not found' }, 404);
+    
+    return c.json(model, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// ==========================================
 // 2. API to upload a new 3D model (Login required)
 // ==========================================
 app.post('/api/models', authMiddleware, async (c) => {
