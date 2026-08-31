@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { sign, verify} from 'hono/jwt'; // Added verify
 import bcrypt from 'bcryptjs';
+import { decode } from 'hono/jwt';
 
 // Define Types
 const app = new Hono<{ 
@@ -74,24 +75,32 @@ app.get('/api/models/:id', async (c) => {
 // ==========================================
 // 2. API to upload a new 3D model (Login required)
 // ==========================================
-app.post('/api/models', authMiddleware, async (c) => {
+app.post('/api/models', async (c) => {
   try {
-    // 👇 เพิ่มการรับค่า category มาจากหน้าเว็บ
-    const { title, image_url, category } = await c.req.json();
-    const user = c.get('user'); 
+    const { title, images, category } = await c.req.json();
     const db = c.env.makerspace_db;
+
+    // 1. ดึงข้อมูลผู้ใช้จาก Token
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.split(' ')[1];
     
-    // @ts-ignore
-    const modelId = globalThis.crypto.randomUUID();
+    // 👇 ใช้ฟังก์ชัน decode ของ Hono แทน atob
+    const { payload } = decode(token!);
+    const author = payload.username;
 
-    // 👇 อัปเดตคำสั่ง SQL ให้บันทึก category ด้วย
-    await db.prepare('INSERT INTO models (id, title, author, image_url, category) VALUES (?, ?, ?, ?, ?)')
-            .bind(modelId, title, user.username, image_url, category || 'Art')
-            .run();
+    // 👇 เติม globalThis. เข้าไปเพื่อให้ TypeScript รู้จัก
+    const id = (globalThis as any).crypto.randomUUID();
+    
+    // เก็บเป็น JSON string: '["data:image/...", "data:image/..."]'
+    const imageUrlsJson = JSON.stringify(images || []);
 
-    return c.json({ message: 'Upload successful!' }, 201);
+    await db.prepare(
+      'INSERT INTO models (id, title, author, image_url, category) VALUES (?, ?, ?, ?, ?)'
+    ).bind(id, title, author, imageUrlsJson, category || 'Art').run();
+
+    return c.json({ message: 'Model uploaded successfully' }, 201);
   } catch (error: any) {
-    return c.json({ message: 'An error occurred', error: error.message }, 500);
+    return c.json({ error: error.message }, 500);
   }
 });
 
@@ -126,30 +135,21 @@ app.delete('/api/models/:id', authMiddleware, async (c) => {
 // ==========================================
 // API แก้ไขโมเดล 3D (เฉพาะเจ้าของผลงาน หรือ Admin)
 // ==========================================
-app.put('/api/models/:id', authMiddleware, async (c) => {
+app.put('/api/models/:id', async (c) => {
   try {
-    const modelId = c.req.param('id');
-    const { title, image_url, category } = await c.req.json();
-    const user = c.get('user'); // ดึงข้อมูลผู้ใช้จาก Token
+    const id = c.req.param('id');
+    const { title, images, category } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    // 1. เช็กว่ามีผลงานนี้อยู่จริงไหม
-    const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(modelId).first();
-    if (!model) return c.json({ message: 'ไม่พบผลงานนี้' }, 404);
-    
-    // 2. เช็กสิทธิ์ (ต้องเป็นเจ้าของ หรือ เป็น admin ถึงจะแก้ได้)
-    if (model.author !== user.username && user.role !== 'admin') {
-      return c.json({ message: 'You do not have permission to edit this.' }, 403);
-    }
+    const imageUrlsJson = JSON.stringify(images || []);
 
-    // 3. สั่งอัปเดตข้อมูลลงฐานข้อมูล
-    await db.prepare('UPDATE models SET title = ?, image_url = ?, category = ? WHERE id = ?')
-            .bind(title, image_url, category || 'Art', modelId)
-            .run();
+    await db.prepare(
+      'UPDATE models SET title = ?, image_url = ?, category = ? WHERE id = ?'
+    ).bind(title, imageUrlsJson, category, id).run();
 
-    return c.json({ message: 'อัปเดตผลงานสำเร็จ' }, 200);
+    return c.json({ message: 'Model updated successfully' }, 200);
   } catch (error: any) {
-    return c.json({ message: 'เกิดข้อผิดพลาด', error: error.message }, 500);
+    return c.json({ error: error.message }, 500);
   }
 });
 
