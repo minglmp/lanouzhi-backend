@@ -107,28 +107,33 @@ app.post('/api/models', async (c) => {
 // ==========================================
 // API to delete a 3D model (Owner only)
 // ==========================================
-app.delete('/api/models/:id', authMiddleware, async (c) => {
+app.delete('/api/models/:id', async (c) => {
   try {
-    const modelId = c.req.param('id');
-    const user = c.get('user'); // Get user data from Token
+    const id = c.req.param('id');
     const db = c.env.makerspace_db;
 
-    // Check if the model exists and if the user is the "author"
-    const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(modelId).first();
-    
+    // 1. ถอดรหัส Token ดูว่าเป็นใคร และมี Role อะไร
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.split(' ')[1];
+    const { payload } = decode(token!);
+    const requester = payload.username;
+    const role = payload.role;
+
+    // 2. ดึงข้อมูลโมเดลเพื่อดูว่าใครเป็นเจ้าของ
+    const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
     if (!model) return c.json({ message: 'Model not found' }, 404);
-    
-    // 👇 Reject if the user is neither the owner nor an admin
-    if (model.author !== user.username && user.role !== 'admin') {
-      return c.json({ message: 'You do not have permission to delete this.' }, 403);
+
+    // 3. 🚨 กฎเหล็ก: ถ้า "ไม่ใช่เจ้าของ" และ "ไม่ใช่ Admin" จะลบไม่ได้!
+    if (model.author !== requester && role !== 'admin') {
+      return c.json({ message: 'Unauthorized: You can only delete your own models.' }, 403);
     }
 
-    // Delete from D1 Database
-    await db.prepare('DELETE FROM models WHERE id = ?').bind(modelId).run();
+    // 4. ลบจริง
+    await db.prepare('DELETE FROM models WHERE id = ?').bind(id).run();
+    return c.json({ message: 'Model deleted successfully' }, 200);
 
-    return c.json({ message: 'Deleted successfully' }, 200);
   } catch (error: any) {
-    return c.json({ message: 'An error occurred', error: error.message }, 500);
+    return c.json({ error: error.message }, 500);
   }
 });
 
@@ -141,11 +146,28 @@ app.put('/api/models/:id', async (c) => {
     const { title, images, category, description } = await c.req.json();
     const db = c.env.makerspace_db;
 
+    // 1. ถอดรหัส Token เพื่อดูว่าใครเป็นคนสั่งแก้ไข
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.split(' ')[1];
+    const { payload } = decode(token!);
+    const requester = payload.username;
+    const role = payload.role;
+
+    // 2. ค้นหาโมเดลในฐานข้อมูล
+    const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
+    if (!model) return c.json({ message: 'Model not found' }, 404);
+
+    // 3. 🚨 กฎเหล็ก: ถ้า "ไม่ใช่เจ้าของ" และ "ไม่ใช่ Admin" จะแก้ไขไม่ได้!
+    if (model.author !== requester && role !== 'admin') {
+      return c.json({ message: 'Unauthorized: You cannot edit this model.' }, 403);
+    }
+
     const imageUrlsJson = JSON.stringify(images || []);
 
+    // 4. บันทึกข้อมูลการแก้ไข
     await db.prepare(
       'UPDATE models SET title = ?, image_url = ?, category = ?, description = ? WHERE id = ?'
-    ).bind(title, imageUrlsJson, category, description, id).run();
+    ).bind(title, imageUrlsJson, category, description || '', id).run();
 
     return c.json({ message: 'Model updated successfully' }, 200);
   } catch (error: any) {
