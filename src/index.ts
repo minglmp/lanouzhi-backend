@@ -177,10 +177,10 @@ app.put('/api/models/:id', async (c) => {
 
 app.post('/api/orders', async (c) => {
   try {
-    const { model_id } = await c.req.json();
+    // 🌟 จุดที่ 1: ต้องรับ slip_image มาจากหน้าเว็บด้วย
+    const { model_id, slip_image } = await c.req.json(); 
     const db = c.env.makerspace_db;
 
-    // ตรวจสอบผู้ซื้อจาก Token
     const authHeader = c.req.header('Authorization');
     const token = authHeader?.split(' ')[1];
     if (!token) return c.json({ message: 'Please login to order' }, 401);
@@ -189,11 +189,15 @@ app.post('/api/orders', async (c) => {
     const buyer = payload.username;
     const orderId = (globalThis as any).crypto.randomUUID();
 
-    // บันทึกลงฐานข้อมูล
-    await db.prepare('INSERT INTO orders (id, model_id, buyer_username) VALUES (?, ?, ?)')
-            .bind(orderId, model_id, buyer).run();
+    if (!slip_image) {
+      return c.json({ message: 'Payment slip is required' }, 400);
+    }
 
-    return c.json({ message: 'Order placed successfully!', order_id: orderId }, 201);
+    // 🌟 จุดที่ 2: ตอน Insert ต้องใส่คอลัมน์ slip_image และ bind(..., slip_image) เข้าไปด้วย
+    await db.prepare('INSERT INTO orders (id, model_id, buyer_username, slip_image) VALUES (?, ?, ?, ?)')
+            .bind(orderId, model_id, buyer, slip_image).run();
+
+    return c.json({ message: 'Order submitted! Waiting for admin approval.', order_id: orderId }, 201);
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
   }
