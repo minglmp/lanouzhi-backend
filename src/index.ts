@@ -77,7 +77,7 @@ app.get('/api/models/:id', async (c) => {
 // ==========================================
 app.post('/api/models', async (c) => {
   try {
-    const { title, images, category, description } = await c.req.json();
+    const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
     // 1. ดึงข้อมูลผู้ใช้จาก Token
@@ -95,8 +95,8 @@ app.post('/api/models', async (c) => {
     const imageUrlsJson = JSON.stringify(images || []);
 
     await db.prepare(
-      'INSERT INTO models (id, title, author, image_url, category, description) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(id, title, author, imageUrlsJson, category || 'Art', description).run();
+    'INSERT INTO models (id, title, author, image_url, category, description, price) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, title, author, imageUrlsJson, category || 'Art', description || '', Number(price) || 0).run();
 
     return c.json({ message: 'Model uploaded successfully' }, 201);
   } catch (error: any) {
@@ -143,7 +143,7 @@ app.delete('/api/models/:id', async (c) => {
 app.put('/api/models/:id', async (c) => {
   try {
     const id = c.req.param('id');
-    const { title, images, category, description } = await c.req.json();
+    const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
     // 1. ถอดรหัส Token เพื่อดูว่าใครเป็นคนสั่งแก้ไข
@@ -166,8 +166,8 @@ app.put('/api/models/:id', async (c) => {
 
     // 4. บันทึกข้อมูลการแก้ไข
     await db.prepare(
-      'UPDATE models SET title = ?, image_url = ?, category = ?, description = ? WHERE id = ?'
-    ).bind(title, imageUrlsJson, category, description || '', id).run();
+    'UPDATE models SET title = ?, image_url = ?, category = ?, description = ?, price = ? WHERE id = ?'
+    ).bind(title, imageUrlsJson, category, description || '', Number(price) || 0, id).run();
 
     return c.json({ message: 'Model updated successfully' }, 200);
   } catch (error: any) {

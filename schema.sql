@@ -16,6 +16,7 @@ CREATE TABLE models (
     image_url TEXT NOT NULL,
     category TEXT DEFAULT 'Art',
     description TEXT,
+    price INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
