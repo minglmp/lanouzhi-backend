@@ -175,6 +175,30 @@ app.put('/api/models/:id', async (c) => {
   }
 });
 
+app.post('/api/orders', async (c) => {
+  try {
+    const { model_id } = await c.req.json();
+    const db = c.env.makerspace_db;
+
+    // ตรวจสอบผู้ซื้อจาก Token
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.split(' ')[1];
+    if (!token) return c.json({ message: 'Please login to order' }, 401);
+    
+    const { payload } = decode(token);
+    const buyer = payload.username;
+    const orderId = (globalThis as any).crypto.randomUUID();
+
+    // บันทึกลงฐานข้อมูล
+    await db.prepare('INSERT INTO orders (id, model_id, buyer_username) VALUES (?, ?, ?)')
+            .bind(orderId, model_id, buyer).run();
+
+    return c.json({ message: 'Order placed successfully!', order_id: orderId }, 201);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
 // ==========================================
 // API for Registration and Login 
 // ==========================================

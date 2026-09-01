@@ -18,3 +18,13 @@ CREATE TABLE models (
     description TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+DROP TABLE IF EXISTS orders;
+CREATE TABLE orders (
+    id TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL,
+    buyer_username TEXT NOT NULL,
+    slip_image TEXT NOT NULL, /* 👈 เพิ่มช่องเก็บ Base64 รูปสลิป */
+    status TEXT DEFAULT 'pending', /* 👈 สถานะเริ่มต้นคือ รอแอดมินตรวจ */
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
