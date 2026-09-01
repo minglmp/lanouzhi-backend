@@ -260,6 +260,51 @@ app.post('/api/auth/login', async (c) => {
   }
 });
 
+// 1. API สำหรับดึงรายการออเดอร์ (เฉพาะแอดมินถึงจะดึงได้)
+app.get('/api/orders', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.split(' ')[1];
+    if (!token) return c.json({ message: 'Unauthorized' }, 401);
+
+    const { payload } = decode(token);
+    if (payload.role !== 'admin') return c.json({ message: 'Forbidden' }, 403);
+
+    // ดึงออเดอร์ พร้อมเชื่อมไปเอาชื่อโมเดลมาโชว์ด้วย
+    const orders = await db.prepare(`
+      SELECT orders.*, models.title as model_title 
+      FROM orders 
+      LEFT JOIN models ON orders.model_id = models.id 
+      ORDER BY orders.created_at DESC
+    `).all();
+
+    return c.json(orders.results, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// 2. API สำหรับอัปเดตสถานะออเดอร์ (Approve / Reject)
+app.put('/api/orders/:id/status', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { status } = await c.req.json(); // รับค่า 'approved' หรือ 'rejected'
+    const db = c.env.makerspace_db;
+
+    const authHeader = c.req.header('Authorization');
+    const token = authHeader?.split(' ')[1];
+    const { payload } = decode(token!);
+    if (payload.role !== 'admin') return c.json({ message: 'Forbidden' }, 403);
+
+    await db.prepare('UPDATE orders SET status = ? WHERE id = ?').bind(status, id).run();
+
+    return c.json({ message: `Order ${status} successfully` }, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
 app.get('/', (c) => {
   return c.json({ message: 'MakerSpace API is running 🚀' });
 });
