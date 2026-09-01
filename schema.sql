@@ -14,6 +14,7 @@ CREATE TABLE models (
     author TEXT NOT NULL,
     likes INTEGER DEFAULT 0,
     image_url TEXT NOT NULL,
-    category TEXT DEFAULT 'Art', 
+    category TEXT DEFAULT 'Art',
+    description TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
