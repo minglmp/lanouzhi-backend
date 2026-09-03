@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { sign, verify} from 'hono/jwt'; // Added verify
+import { sign, verify, decode } from 'hono/jwt';
 import bcrypt from 'bcryptjs';
-import { decode } from 'hono/jwt';
 
 // Define Types
 const app = new Hono<{ 
-  Bindings: { makerspace_db: any },
-  Variables: { user: any } // Add a variable to pass User data after Token verification
+  Bindings: { 
+    makerspace_db: any;
+    IMAGE_BUCKET: R2Bucket; // 🌟 เพิ่มบรรทัดนี้สำหรับ R2 Bucket
+  },
+  Variables: { user: any }
 }>();
 
 app.use('/*', cors());
@@ -24,7 +26,6 @@ const authMiddleware = async (c: any, next: any) => {
     return c.json({ message: 'Please log in to continue' }, 401);
   }
 
-  // 1. Add "as string" to fix TypeScript warnings
   const token = authHeader.split(' ')[1] as string; 
   
   try {
@@ -32,22 +33,20 @@ const authMiddleware = async (c: any, next: any) => {
     c.set('user', decodedPayload); 
     await next(); 
   } catch (error: any) {
-    // 2. Output the exact error reason
     return c.json({ 
       message: 'Invalid or expired token', 
-      error_detail: error.message, // State the exact cause
-      received_token: token // Show the received token for debugging
+      error_detail: error.message,
+      received_token: token
     }, 401);
   }
 };
 
 // ==========================================
-// 1. API to fetch all 3D models (Home page)
+// API to fetch all 3D models (Home page)
 // ==========================================
 app.get('/api/models', async (c) => {
   try {
     const db = c.env.makerspace_db;
-    // Fetch all models, sorted from newest to oldest
     const { results } = await db.prepare('SELECT * FROM models ORDER BY created_at DESC').all();
     return c.json(results, 200);
   } catch (error: any) {
@@ -73,29 +72,23 @@ app.get('/api/models/:id', async (c) => {
 });
 
 // ==========================================
-// 2. API to upload a new 3D model (Login required)
+// API to upload a new 3D model (Login required)
 // ==========================================
 app.post('/api/models', async (c) => {
   try {
     const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    // 1. ดึงข้อมูลผู้ใช้จาก Token
     const authHeader = c.req.header('Authorization');
     const token = authHeader?.split(' ')[1];
-    
-    // 👇 ใช้ฟังก์ชัน decode ของ Hono แทน atob
     const { payload } = decode(token!);
     const author = payload.username;
 
-    // 👇 เติม globalThis. เข้าไปเพื่อให้ TypeScript รู้จัก
     const id = (globalThis as any).crypto.randomUUID();
-    
-    // เก็บเป็น JSON string: '["data:image/...", "data:image/..."]'
     const imageUrlsJson = JSON.stringify(images || []);
 
     await db.prepare(
-    'INSERT INTO models (id, title, author, image_url, category, description, price) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO models (id, title, author, image_url, category, description, price) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(id, title, author, imageUrlsJson, category || 'Art', description || '', Number(price) || 0).run();
 
     return c.json({ message: 'Model uploaded successfully' }, 201);
@@ -112,23 +105,19 @@ app.delete('/api/models/:id', async (c) => {
     const id = c.req.param('id');
     const db = c.env.makerspace_db;
 
-    // 1. ถอดรหัส Token ดูว่าเป็นใคร และมี Role อะไร
     const authHeader = c.req.header('Authorization');
     const token = authHeader?.split(' ')[1];
     const { payload } = decode(token!);
     const requester = payload.username;
     const role = payload.role;
 
-    // 2. ดึงข้อมูลโมเดลเพื่อดูว่าใครเป็นเจ้าของ
     const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
     if (!model) return c.json({ message: 'Model not found' }, 404);
 
-    // 3. 🚨 กฎเหล็ก: ถ้า "ไม่ใช่เจ้าของ" และ "ไม่ใช่ Admin" จะลบไม่ได้!
     if (model.author !== requester && role !== 'admin') {
       return c.json({ message: 'Unauthorized: You can only delete your own models.' }, 403);
     }
 
-    // 4. ลบจริง
     await db.prepare('DELETE FROM models WHERE id = ?').bind(id).run();
     return c.json({ message: 'Model deleted successfully' }, 200);
 
@@ -146,27 +135,23 @@ app.put('/api/models/:id', async (c) => {
     const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    // 1. ถอดรหัส Token เพื่อดูว่าใครเป็นคนสั่งแก้ไข
     const authHeader = c.req.header('Authorization');
     const token = authHeader?.split(' ')[1];
     const { payload } = decode(token!);
     const requester = payload.username;
     const role = payload.role;
 
-    // 2. ค้นหาโมเดลในฐานข้อมูล
     const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
     if (!model) return c.json({ message: 'Model not found' }, 404);
 
-    // 3. 🚨 กฎเหล็ก: ถ้า "ไม่ใช่เจ้าของ" และ "ไม่ใช่ Admin" จะแก้ไขไม่ได้!
     if (model.author !== requester && role !== 'admin') {
       return c.json({ message: 'Unauthorized: You cannot edit this model.' }, 403);
     }
 
     const imageUrlsJson = JSON.stringify(images || []);
 
-    // 4. บันทึกข้อมูลการแก้ไข
     await db.prepare(
-    'UPDATE models SET title = ?, image_url = ?, category = ?, description = ?, price = ? WHERE id = ?'
+      'UPDATE models SET title = ?, image_url = ?, category = ?, description = ?, price = ? WHERE id = ?'
     ).bind(title, imageUrlsJson, category, description || '', Number(price) || 0, id).run();
 
     return c.json({ message: 'Model updated successfully' }, 200);
@@ -175,10 +160,12 @@ app.put('/api/models/:id', async (c) => {
   }
 });
 
+// ==========================================
+// API สร้างออเดอร์ใหม่ (ลบการตรวจสอบสลิปออกแล้ว)
+// ==========================================
 app.post('/api/orders', async (c) => {
   try {
-    // 🌟 จุดที่ 1: ต้องรับ slip_image มาจากหน้าเว็บด้วย
-    const { model_id, slip_image } = await c.req.json(); 
+    const { model_id } = await c.req.json(); // ❌ เอา slip_image ออก
     const db = c.env.makerspace_db;
 
     const authHeader = c.req.header('Authorization');
@@ -189,13 +176,9 @@ app.post('/api/orders', async (c) => {
     const buyer = payload.username;
     const orderId = (globalThis as any).crypto.randomUUID();
 
-    if (!slip_image) {
-      return c.json({ message: 'Payment slip is required' }, 400);
-    }
-
-    // 🌟 จุดที่ 2: ตอน Insert ต้องใส่คอลัมน์ slip_image และ bind(..., slip_image) เข้าไปด้วย
+    // ✅ แทนที่ slip ด้วย 'no_slip_provided' เพื่อไม่ให้ Database โวยวายว่าค่าว่าง
     await db.prepare('INSERT INTO orders (id, model_id, buyer_username, slip_image) VALUES (?, ?, ?, ?)')
-            .bind(orderId, model_id, buyer, slip_image).run();
+            .bind(orderId, model_id, buyer, 'no_slip_provided').run();
 
     return c.json({ message: 'Order submitted! Waiting for admin approval.', order_id: orderId }, 201);
   } catch (error: any) {
@@ -208,11 +191,9 @@ app.post('/api/orders', async (c) => {
 // ==========================================
 app.post('/api/auth/register', async (c) => {
   try {
-    // 👇 1. Changed from receiving email to phone_number
     const { username, phone_number, password } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    // 👇 2. Check for duplicate phone number instead of email
     const existingUser = await db.prepare('SELECT * FROM users WHERE phone_number = ?').bind(phone_number).first();
     if (existingUser) return c.json({ message: 'This phone number is already registered' }, 400);
 
@@ -221,7 +202,6 @@ app.post('/api/auth/register', async (c) => {
     // @ts-ignore
     const userId = globalThis.crypto.randomUUID();
 
-    // 👇 3. Save phone_number to database (set default role as 'user')
     await db.prepare('INSERT INTO users (id, username, phone_number, password, role) VALUES (?, ?, ?, ?, ?)')
             .bind(userId, username, phone_number, hashedPassword, 'user').run();
 
@@ -233,11 +213,9 @@ app.post('/api/auth/register', async (c) => {
 
 app.post('/api/auth/login', async (c) => {
   try {
-    // 👇 1. Changed from receiving email to phone_number
     const { phone_number, password } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    // 👇 2. Find user by phone number
     const user = await db.prepare('SELECT * FROM users WHERE phone_number = ?').bind(phone_number).first();
     if (!user) return c.json({ message: 'Incorrect phone number or password' }, 401);
 
@@ -247,7 +225,6 @@ app.post('/api/auth/login', async (c) => {
     const payload = {
       userId: user.id,
       username: user.username,
-      // 👇 3. Extract role and embed it in the Token for the frontend to know if the user is an admin or user
       role: user.role || 'user', 
       exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
     };
@@ -260,7 +237,9 @@ app.post('/api/auth/login', async (c) => {
   }
 });
 
-// 1. API สำหรับดึงรายการออเดอร์ (เฉพาะแอดมินถึงจะดึงได้)
+// ==========================================
+// API ดึงรายการออเดอร์สำหรับ Admin
+// ==========================================
 app.get('/api/orders', async (c) => {
   try {
     const db = c.env.makerspace_db;
@@ -271,7 +250,6 @@ app.get('/api/orders', async (c) => {
     const { payload } = decode(token);
     if (payload.role !== 'admin') return c.json({ message: 'Forbidden' }, 403);
 
-    // ดึงออเดอร์ พร้อมเชื่อมไปเอาชื่อโมเดลมาโชว์ด้วย
     const orders = await db.prepare(`
       SELECT orders.*, models.title as model_title 
       FROM orders 
@@ -285,11 +263,13 @@ app.get('/api/orders', async (c) => {
   }
 });
 
-// 2. API สำหรับอัปเดตสถานะออเดอร์ (Approve / Reject)
+// ==========================================
+// API สำหรับอัปเดตสถานะออเดอร์ (Approve / Reject)
+// ==========================================
 app.put('/api/orders/:id/status', async (c) => {
   try {
     const id = c.req.param('id');
-    const { status } = await c.req.json(); // รับค่า 'approved' หรือ 'rejected'
+    const { status } = await c.req.json();
     const db = c.env.makerspace_db;
 
     const authHeader = c.req.header('Authorization');
@@ -300,6 +280,37 @@ app.put('/api/orders/:id/status', async (c) => {
     await db.prepare('UPDATE orders SET status = ? WHERE id = ?').bind(status, id).run();
 
     return c.json({ message: `Order ${status} successfully` }, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// ==========================================
+// 🌟 API สำหรับอัปโหลดรูปภาพไปที่ R2 (เพิ่มใหม่)
+// ==========================================
+app.post('/api/upload', async (c) => {
+  try {
+    const body = await c.req.parseBody();
+    const file = body['file'] as File;
+    
+    if (!file) {
+      return c.json({ error: 'No file uploaded' }, 400);
+    }
+
+    // สร้างชื่อไฟล์ไม่ให้ซ้ำกัน (ใช้เวลาปัจจุบันนำหน้า และเปลี่ยนช่องว่างเป็น _)
+    const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '_')}`;
+
+    // โยนไฟล์ขึ้น Cloudflare R2
+    await c.env.IMAGE_BUCKET.put(fileName, await file.arrayBuffer(), {
+      httpMetadata: { contentType: file.type },
+    });
+
+    // ส่งชื่อไฟล์กลับไปให้หน้าเว็บ
+    return c.json({ 
+      message: 'Upload successful', 
+      fileName: fileName 
+    }, 200);
+
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
   }
