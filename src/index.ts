@@ -81,6 +81,12 @@ app.post('/api/models', async (c) => {
     const token = authHeader?.split(' ')[1];
     const { payload } = decode(token!);
     const author = payload.username;
+    const role = payload.role; // 🌟 ดึงสิทธิ์ (Role) ออกมาเช็ก
+
+    // 🌟 กฎเหล็ก: ถ้าไม่ใช่ Admin และไม่ใช่ Creator ห้ามอัปโหลดเด็ดขาด!
+    if (role !== 'admin' && role !== 'creator') {
+      return c.json({ message: 'Forbidden: Only Creators and Admins can upload models.' }, 403);
+    }
 
     const id = (globalThis as any).crypto.randomUUID();
     const imageUrlsJson = JSON.stringify(images || []);
