@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 const app = new Hono<{ 
   Bindings: { 
     makerspace_db: any;
-    IMAGE_BUCKET: R2Bucket; // 🌟 เพิ่มบรรทัดนี้สำหรับ R2 Bucket
+    IMAGE_BUCKET: R2Bucket; 
   },
   Variables: { user: any }
 }>();
@@ -16,28 +16,28 @@ app.use('/*', cors());
 
 const SECRET_KEY = "super_secret_key";
 
+// 🌟 Helper Function: ดึงชื่อไฟล์ออกจาก URL (เช่น ดึง '123-cat.jpg' ออกจาก 'https://pub-xxx.r2.dev/123-cat.jpg')
+const getFileNameFromUrl = (url: string) => {
+  if (!url || !url.includes('r2.dev')) return null; // เช็กว่าเป็นลิงก์จาก R2 จริงๆ (ป้องกัน Error ถ้ามีรูป Base64 เก่าค้างอยู่)
+  const parts = url.split('/');
+  return parts[parts.length - 1]; 
+};
+
 // ==========================================
 // Middleware for checking Token (Auth Guard)
 // ==========================================
 const authMiddleware = async (c: any, next: any) => {
   const authHeader = c.req.header('Authorization');
-  
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return c.json({ message: 'Please log in to continue' }, 401);
   }
-
   const token = authHeader.split(' ')[1] as string; 
-  
   try {
     const decodedPayload = await verify(token, SECRET_KEY, 'HS256');
     c.set('user', decodedPayload); 
     await next(); 
   } catch (error: any) {
-    return c.json({ 
-      message: 'Invalid or expired token', 
-      error_detail: error.message,
-      received_token: token
-    }, 401);
+    return c.json({ message: 'Invalid or expired token', error_detail: error.message, received_token: token }, 401);
   }
 };
 
@@ -62,9 +62,7 @@ app.get('/api/models/:id', async (c) => {
     const id = c.req.param('id');
     const db = c.env.makerspace_db;
     const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
-    
     if (!model) return c.json({ message: 'Model not found' }, 404);
-    
     return c.json(model, 200);
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
@@ -98,7 +96,7 @@ app.post('/api/models', async (c) => {
 });
 
 // ==========================================
-// API to delete a 3D model (Owner only)
+// 🌟 API ลบโมเดล 3D (เพิ่มระบบลบไฟล์ใน R2)
 // ==========================================
 app.delete('/api/models/:id', async (c) => {
   try {
@@ -111,6 +109,7 @@ app.delete('/api/models/:id', async (c) => {
     const requester = payload.username;
     const role = payload.role;
 
+    // 1. ดึงข้อมูลโมเดลมาก่อนเพื่อเอาลิงก์รูปภาพ
     const model = await db.prepare('SELECT * FROM models WHERE id = ?').bind(id).first();
     if (!model) return c.json({ message: 'Model not found' }, 404);
 
@@ -118,8 +117,18 @@ app.delete('/api/models/:id', async (c) => {
       return c.json({ message: 'Unauthorized: You can only delete your own models.' }, 403);
     }
 
+    // 2. ตามไปลบไฟล์ในถัง R2
+    const imageUrls = JSON.parse(model.image_url || '[]');
+    for (const url of imageUrls) {
+      const fileName = getFileNameFromUrl(url);
+      if (fileName) {
+        await c.env.IMAGE_BUCKET.delete(fileName); // 🗑️ สั่งลบไฟล์ทิ้ง
+      }
+    }
+
+    // 3. ลบข้อมูลจาก Database D1
     await db.prepare('DELETE FROM models WHERE id = ?').bind(id).run();
-    return c.json({ message: 'Model deleted successfully' }, 200);
+    return c.json({ message: 'Model and images deleted successfully' }, 200);
 
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
@@ -127,11 +136,12 @@ app.delete('/api/models/:id', async (c) => {
 });
 
 // ==========================================
-// API แก้ไขโมเดล 3D (เฉพาะเจ้าของผลงาน หรือ Admin)
+// 🌟 API แก้ไขโมเดล 3D (เพิ่มระบบเช็กลบไฟล์เก่าใน R2)
 // ==========================================
 app.put('/api/models/:id', async (c) => {
   try {
     const id = c.req.param('id');
+    // images ที่รับมาคือ "รูปรวมทั้งหมดที่ต้องการเก็บไว้ (รูปเก่าที่เหลือ + รูปใหม่)"
     const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
@@ -148,8 +158,23 @@ app.put('/api/models/:id', async (c) => {
       return c.json({ message: 'Unauthorized: You cannot edit this model.' }, 403);
     }
 
-    const imageUrlsJson = JSON.stringify(images || []);
+    // 1. หากลุ่ม "รูปที่ถูกกดลบออก (Orphaned Images)"
+    const oldImageUrls = JSON.parse(model.image_url || '[]');
+    const newImageUrls = images || [];
+    
+    // กรองหาลิงก์เก่า ที่ไม่มีอยู่ในลิงก์ใหม่ (แปลว่าโดน User ลบออกไปตอน Edit)
+    const deletedUrls = oldImageUrls.filter((oldUrl: string) => !newImageUrls.includes(oldUrl));
 
+    // 2. ตามไปลบไฟล์ที่ไม่ได้ใช้แล้วในถัง R2
+    for (const url of deletedUrls) {
+      const fileName = getFileNameFromUrl(url);
+      if (fileName) {
+        await c.env.IMAGE_BUCKET.delete(fileName); // 🗑️ สั่งลบไฟล์ที่ถูกคัดออก
+      }
+    }
+
+    // 3. อัปเดตข้อมูลใหม่ลง Database
+    const imageUrlsJson = JSON.stringify(newImageUrls);
     await db.prepare(
       'UPDATE models SET title = ?, image_url = ?, category = ?, description = ?, price = ? WHERE id = ?'
     ).bind(title, imageUrlsJson, category, description || '', Number(price) || 0, id).run();
@@ -161,11 +186,11 @@ app.put('/api/models/:id', async (c) => {
 });
 
 // ==========================================
-// API สร้างออเดอร์ใหม่ (ลบการตรวจสอบสลิปออกแล้ว)
+// API สร้างออเดอร์ใหม่
 // ==========================================
 app.post('/api/orders', async (c) => {
   try {
-    const { model_id } = await c.req.json(); // ❌ เอา slip_image ออก
+    const { model_id } = await c.req.json(); 
     const db = c.env.makerspace_db;
 
     const authHeader = c.req.header('Authorization');
@@ -176,7 +201,6 @@ app.post('/api/orders', async (c) => {
     const buyer = payload.username;
     const orderId = (globalThis as any).crypto.randomUUID();
 
-    // ✅ แทนที่ slip ด้วย 'no_slip_provided' เพื่อไม่ให้ Database โวยวายว่าค่าว่าง
     await db.prepare('INSERT INTO orders (id, model_id, buyer_username, slip_image) VALUES (?, ?, ?, ?)')
             .bind(orderId, model_id, buyer, 'no_slip_provided').run();
 
@@ -286,7 +310,7 @@ app.put('/api/orders/:id/status', async (c) => {
 });
 
 // ==========================================
-// 🌟 API สำหรับอัปโหลดรูปภาพไปที่ R2 (เพิ่มใหม่)
+// API สำหรับอัปโหลดรูปภาพไปที่ R2
 // ==========================================
 app.post('/api/upload', async (c) => {
   try {
@@ -297,15 +321,12 @@ app.post('/api/upload', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
 
-    // สร้างชื่อไฟล์ไม่ให้ซ้ำกัน (ใช้เวลาปัจจุบันนำหน้า และเปลี่ยนช่องว่างเป็น _)
     const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '_')}`;
 
-    // โยนไฟล์ขึ้น Cloudflare R2
     await c.env.IMAGE_BUCKET.put(fileName, await file.arrayBuffer(), {
       httpMetadata: { contentType: file.type },
     });
 
-    // ส่งชื่อไฟล์กลับไปให้หน้าเว็บ
     return c.json({ 
       message: 'Upload successful', 
       fileName: fileName 
