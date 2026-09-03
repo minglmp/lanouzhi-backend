@@ -268,7 +268,7 @@ app.post('/api/auth/login', async (c) => {
 });
 
 // ==========================================
-// API ดึงรายการออเดอร์สำหรับ Admin
+// API ดึงรายการออเดอร์ (แยกสิทธิ์ Admin / User)
 // ==========================================
 app.get('/api/orders', async (c) => {
   try {
@@ -278,16 +278,36 @@ app.get('/api/orders', async (c) => {
     if (!token) return c.json({ message: 'Unauthorized' }, 401);
 
     const { payload } = decode(token);
-    if (payload.role !== 'admin') return c.json({ message: 'Forbidden' }, 403);
+    const role = payload.role;
+    const username = payload.username;
 
-    const orders = await db.prepare(`
-      SELECT orders.*, models.title as model_title 
-      FROM orders 
-      LEFT JOIN models ON orders.model_id = models.id 
-      ORDER BY orders.created_at DESC
-    `).all();
+    let query = '';
+    let results;
 
-    return c.json(orders.results, 200);
+    if (role === 'admin') {
+      // แอดมิน: ดึงออเดอร์ของทุกคน
+      query = `
+        SELECT orders.*, models.title as model_title 
+        FROM orders 
+        LEFT JOIN models ON orders.model_id = models.id 
+        ORDER BY orders.created_at DESC
+      `;
+      const res = await db.prepare(query).all();
+      results = res.results;
+    } else {
+      // ผู้ใช้ทั่วไป: ดึงเฉพาะออเดอร์ที่ตัวเองเป็นคนซื้อ
+      query = `
+        SELECT orders.*, models.title as model_title 
+        FROM orders 
+        LEFT JOIN models ON orders.model_id = models.id 
+        WHERE orders.buyer_username = ?
+        ORDER BY orders.created_at DESC
+      `;
+      const res = await db.prepare(query).bind(username).all();
+      results = res.results;
+    }
+
+    return c.json(results, 200);
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
   }
