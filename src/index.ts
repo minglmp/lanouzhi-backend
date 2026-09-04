@@ -367,4 +367,71 @@ app.get('/', (c) => {
   return c.json({ message: 'MakerSpace API is running 🚀' });
 });
 
+// ==========================================
+// API: กดไลก์ / ยกเลิกไลก์ โมเดล (Like & Unlike)
+// ==========================================
+app.post('/api/models/:id/like', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const modelId = c.req.param('id');
+
+    // เช็กการล็อกอิน (คนกดไลก์ต้องล็อกอินก่อน)
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ message: 'Please login to like' }, 401);
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = decode(token);
+    const username = payload.username;
+
+    // เช็กว่าเคยกดไลก์ไปหรือยัง
+    const existingLike = await db.prepare(
+      'SELECT * FROM likes WHERE model_id = ? AND username = ?'
+    ).bind(modelId, username).first();
+
+    if (existingLike) {
+      // ถ้าเคยกดแล้ว = ยกเลิกไลก์ (Unlike) เอาชื่อออกจากสมุด และลบยอด -1
+      await db.batch([
+        db.prepare('DELETE FROM likes WHERE model_id = ? AND username = ?').bind(modelId, username),
+        db.prepare('UPDATE models SET likes = MAX(0, likes - 1) WHERE id = ?').bind(modelId)
+      ]);
+      return c.json({ message: 'Unliked', liked: false }, 200);
+    } else {
+      // ถ้ายังไม่เคยกด = กดไลก์ (Like) เพิ่มชื่อลงสมุด และบวกยอด +1
+      const likeId = (globalThis as any).crypto.randomUUID();
+      await db.batch([
+        db.prepare('INSERT INTO likes (id, model_id, username) VALUES (?, ?, ?)').bind(likeId, modelId, username),
+        db.prepare('UPDATE models SET likes = likes + 1 WHERE id = ?').bind(modelId)
+      ]);
+      return c.json({ message: 'Liked', liked: true }, 200);
+    }
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// ==========================================
+// API: ดึงรายการ ID โมเดลที่ User คนนี้เคยกดไลก์ไปแล้ว
+// ==========================================
+app.get('/api/user/likes', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const authHeader = c.req.header('Authorization');
+    
+    // ถ้าไม่ได้ล็อกอิน ไม่ต้องโชว์หัวใจแดง ส่ง Array เปล่าๆ กลับไป
+    if (!authHeader) return c.json([], 200);
+
+    const token = authHeader.split(' ')[1];
+    const { payload } = decode(token);
+    const username = payload.username;
+
+    // ดึงเฉพาะไอดีโมเดลที่ยูสเซอร์คนนี้เคยกดไลก์
+    const res = await db.prepare('SELECT model_id FROM likes WHERE username = ?').bind(username).all();
+    const likedModelIds = res.results.map((r: any) => r.model_id);
+
+    return c.json(likedModelIds, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
 export default app;
