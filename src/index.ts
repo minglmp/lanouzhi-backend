@@ -434,4 +434,33 @@ app.get('/api/user/likes', async (c) => {
   }
 });
 
+// ==========================================
+// API: ดึงรายละเอียดโมเดลที่กดไลก์ไว้ (My Favorites)
+// ==========================================
+app.get('/api/user/favorites', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
+
+    const token = authHeader.split(' ')[1];
+    const { payload } = decode(token);
+    const username = payload.username;
+
+    // ดึงข้อมูลโมเดล โดย JOIN กับตาราง likes เรียงลำดับจากที่เพิ่งกดไลก์ล่าสุด
+    const query = `
+      SELECT models.* 
+      FROM models 
+      JOIN likes ON models.id = likes.model_id 
+      WHERE likes.username = ? 
+      ORDER BY likes.created_at DESC
+    `;
+    const res = await db.prepare(query).bind(username).all();
+
+    return c.json(res.results, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
 export default app;
