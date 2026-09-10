@@ -477,13 +477,14 @@ app.get('/api/chat/contacts', async (c) => {
     const { payload } = decode(authHeader.split(' ')[1]);
     const username = payload.username;
 
+    // 🌟 เพิ่ม COLLATE NOCASE ตรง GROUP BY เพื่อให้มันยุบรวม Admin และ admin เป็นคนเดียวกัน
     const res = await db.prepare(`
       SELECT 
         CASE WHEN LOWER(sender) = LOWER(?) THEN receiver ELSE sender END as contact_name,
         SUM(CASE WHEN LOWER(receiver) = LOWER(?) AND is_read = 0 THEN 1 ELSE 0 END) as unread_count
       FROM messages 
       WHERE LOWER(sender) = LOWER(?) OR LOWER(receiver) = LOWER(?)
-      GROUP BY contact_name
+      GROUP BY contact_name COLLATE NOCASE
     `).bind(username, username, username, username).all();
     
     let contacts = res.results.map((r: any) => ({
