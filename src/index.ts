@@ -464,7 +464,7 @@ app.get('/api/user/favorites', async (c) => {
 });
 
 // ==========================================
-// API: ระบบ Chat (พูดคุย)
+// API: ระบบ Chat (พูดคุย) [อัปเดตแก้ปัญหาตัวพิมพ์เล็ก/ใหญ่]
 // ==========================================
 
 // 1. ดึงรายชื่อคนที่เคยคุยด้วย (Contacts)
@@ -477,17 +477,18 @@ app.get('/api/chat/contacts', async (c) => {
     const { payload } = decode(authHeader.split(' ')[1]);
     const username = payload.username;
 
-    // ดึงชื่อคนที่เราเคยส่งหา หรือเขาส่งมาหาเรา
+    // ใช้ LOWER() เพื่อให้ค้นหาเจอเสมอ ไม่ว่าจะเป็น Admin หรือ admin
     const res = await db.prepare(`
-      SELECT DISTINCT CASE WHEN sender = ? THEN receiver ELSE sender END as contact_name
-      FROM messages WHERE sender = ? OR receiver = ?
+      SELECT DISTINCT CASE WHEN LOWER(sender) = LOWER(?) THEN receiver ELSE sender END as contact_name
+      FROM messages WHERE LOWER(sender) = LOWER(?) OR LOWER(receiver) = LOWER(?)
     `).bind(username, username, username).all();
     
     let contacts = res.results.map((r: any) => r.contact_name);
     
-    // ลูกเล่น: ถ้าไม่ใช่แอดมิน ให้มีชื่อ "admin" เป็นผู้ติดต่อพื้นฐานเสมอ (เผื่อลูกค้าอยากทักหาซัพพอร์ต)
-    if (payload.role !== 'admin' && !contacts.includes('admin')) {
-        contacts.unshift('admin');
+    // ถ้าไม่ใช่แอดมิน ให้มีชื่อแอดมินรอให้คุยเสมอ
+    const hasAdmin = contacts.some((contact: string) => contact.toLowerCase() === 'admin');
+    if (payload.role !== 'admin' && !hasAdmin) {
+        contacts.unshift('Admin');
     }
 
     return c.json(contacts, 200);
@@ -507,9 +508,11 @@ app.get('/api/chat/:contact', async (c) => {
     const { payload } = decode(authHeader.split(' ')[1]);
     const username = payload.username;
 
+    // ใช้ LOWER() ดึงข้อความของทั้ง 2 ฝ่ายออกมา
     const res = await db.prepare(`
       SELECT * FROM messages 
-      WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?)
+      WHERE (LOWER(sender) = LOWER(?) AND LOWER(receiver) = LOWER(?))
+         OR (LOWER(sender) = LOWER(?) AND LOWER(receiver) = LOWER(?))
       ORDER BY created_at ASC
     `).bind(username, contact, contact, username).all();
 
