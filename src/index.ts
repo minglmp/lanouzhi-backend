@@ -463,4 +463,82 @@ app.get('/api/user/favorites', async (c) => {
   }
 });
 
+// ==========================================
+// API: ระบบ Chat (พูดคุย)
+// ==========================================
+
+// 1. ดึงรายชื่อคนที่เคยคุยด้วย (Contacts)
+app.get('/api/chat/contacts', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
+    
+    const { payload } = decode(authHeader.split(' ')[1]);
+    const username = payload.username;
+
+    // ดึงชื่อคนที่เราเคยส่งหา หรือเขาส่งมาหาเรา
+    const res = await db.prepare(`
+      SELECT DISTINCT CASE WHEN sender = ? THEN receiver ELSE sender END as contact_name
+      FROM messages WHERE sender = ? OR receiver = ?
+    `).bind(username, username, username).all();
+    
+    let contacts = res.results.map((r: any) => r.contact_name);
+    
+    // ลูกเล่น: ถ้าไม่ใช่แอดมิน ให้มีชื่อ "admin" เป็นผู้ติดต่อพื้นฐานเสมอ (เผื่อลูกค้าอยากทักหาซัพพอร์ต)
+    if (payload.role !== 'admin' && !contacts.includes('admin')) {
+        contacts.unshift('admin');
+    }
+
+    return c.json(contacts, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// 2. ดึงประวัติการแชทกับคนๆ นึง
+app.get('/api/chat/:contact', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const contact = c.req.param('contact');
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
+    
+    const { payload } = decode(authHeader.split(' ')[1]);
+    const username = payload.username;
+
+    const res = await db.prepare(`
+      SELECT * FROM messages 
+      WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?)
+      ORDER BY created_at ASC
+    `).bind(username, contact, contact, username).all();
+
+    return c.json(res.results, 200);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// 3. ส่งข้อความ
+app.post('/api/chat', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
+    
+    const { payload } = decode(authHeader.split(' ')[1]);
+    const sender = payload.username;
+    const { receiver, content } = await c.req.json();
+
+    const id = (globalThis as any).crypto.randomUUID();
+    await db.prepare(`
+      INSERT INTO messages (id, sender, receiver, content) VALUES (?, ?, ?, ?)
+    `).bind(id, sender, receiver, content).run();
+
+    return c.json({ message: 'Sent successfully' }, 201);
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
 export default app;
