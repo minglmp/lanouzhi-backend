@@ -464,10 +464,10 @@ app.get('/api/user/favorites', async (c) => {
 });
 
 // ==========================================
-// API: ระบบ Chat (พูดคุย) [อัปเดตแก้ปัญหาตัวพิมพ์เล็ก/ใหญ่]
+// API: ระบบ Chat (พูดคุย) [อัปเดตระบบแจ้งเตือน Unread]
 // ==========================================
 
-// 1. ดึงรายชื่อคนที่เคยคุยด้วย (Contacts)
+// 1. ดึงรายชื่อคนที่เคยคุยด้วย (พร้อมจำนวนข้อความที่ยังไม่ได้อ่าน)
 app.get('/api/chat/contacts', async (c) => {
   try {
     const db = c.env.makerspace_db;
@@ -477,18 +477,23 @@ app.get('/api/chat/contacts', async (c) => {
     const { payload } = decode(authHeader.split(' ')[1]);
     const username = payload.username;
 
-    // ใช้ LOWER() เพื่อให้ค้นหาเจอเสมอ ไม่ว่าจะเป็น Admin หรือ admin
     const res = await db.prepare(`
-      SELECT DISTINCT CASE WHEN LOWER(sender) = LOWER(?) THEN receiver ELSE sender END as contact_name
-      FROM messages WHERE LOWER(sender) = LOWER(?) OR LOWER(receiver) = LOWER(?)
-    `).bind(username, username, username).all();
+      SELECT 
+        CASE WHEN LOWER(sender) = LOWER(?) THEN receiver ELSE sender END as contact_name,
+        SUM(CASE WHEN LOWER(receiver) = LOWER(?) AND is_read = 0 THEN 1 ELSE 0 END) as unread_count
+      FROM messages 
+      WHERE LOWER(sender) = LOWER(?) OR LOWER(receiver) = LOWER(?)
+      GROUP BY contact_name
+    `).bind(username, username, username, username).all();
     
-    let contacts = res.results.map((r: any) => r.contact_name);
+    let contacts = res.results.map((r: any) => ({
+        name: r.contact_name,
+        unread: r.unread_count || 0
+    }));
     
-    // ถ้าไม่ใช่แอดมิน ให้มีชื่อแอดมินรอให้คุยเสมอ
-    const hasAdmin = contacts.some((contact: string) => contact.toLowerCase() === 'admin');
+    const hasAdmin = contacts.some((c: any) => c.name.toLowerCase() === 'admin');
     if (payload.role !== 'admin' && !hasAdmin) {
-        contacts.unshift('Admin');
+        contacts.unshift({ name: 'Admin', unread: 0 });
     }
 
     return c.json(contacts, 200);
@@ -497,7 +502,7 @@ app.get('/api/chat/contacts', async (c) => {
   }
 });
 
-// 2. ดึงประวัติการแชทกับคนๆ นึง
+// 2. ดึงประวัติการแชท (และอัปเดตสถานะว่า "อ่านแล้ว")
 app.get('/api/chat/:contact', async (c) => {
   try {
     const db = c.env.makerspace_db;
@@ -508,7 +513,12 @@ app.get('/api/chat/:contact', async (c) => {
     const { payload } = decode(authHeader.split(' ')[1]);
     const username = payload.username;
 
-    // ใช้ LOWER() ดึงข้อความของทั้ง 2 ฝ่ายออกมา
+    // อัปเดตข้อความที่คนนี้ส่งมาหาเราให้เป็น "อ่านแล้ว"
+    await db.prepare(`
+      UPDATE messages SET is_read = 1 
+      WHERE LOWER(sender) = LOWER(?) AND LOWER(receiver) = LOWER(?) AND is_read = 0
+    `).bind(contact, username).run();
+
     const res = await db.prepare(`
       SELECT * FROM messages 
       WHERE (LOWER(sender) = LOWER(?) AND LOWER(receiver) = LOWER(?))
@@ -541,6 +551,27 @@ app.post('/api/chat', async (c) => {
     return c.json({ message: 'Sent successfully' }, 201);
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
+  }
+});
+
+// 4. โหลดจำนวนข้อความใหม่รวมทั้งหมด (สำหรับโชว์ Badge ที่เมนู Sidebar)
+app.get('/api/chat/unread/total', async (c) => {
+  try {
+    const db = c.env.makerspace_db;
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) return c.json({ count: 0 }, 200);
+    
+    const { payload } = decode(authHeader.split(' ')[1]);
+    const username = payload.username;
+
+    const res = await db.prepare(`
+      SELECT COUNT(*) as count FROM messages 
+      WHERE LOWER(receiver) = LOWER(?) AND is_read = 0
+    `).bind(username).first();
+
+    return c.json({ count: res?.count || 0 }, 200);
+  } catch (error: any) {
+    return c.json({ count: 0 }, 500);
   }
 });
 
