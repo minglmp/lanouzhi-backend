@@ -584,7 +584,6 @@ app.post('/api/auth/reset-password', async (c) => {
     const db = c.env.makerspace_db;
     const body = await c.req.json();
     
-    // ดึงค่าเบอร์โทร (รองรับทั้งที่ส่งมาเป็น phone_number หรือ username)
     const phone = body.phone_number || body.username;
     const newPassword = body.newPassword;
 
@@ -592,14 +591,19 @@ app.post('/api/auth/reset-password', async (c) => {
       return c.json({ message: 'Please provide phone number and new password' }, 400);
     }
 
-    // 1. ค้นหาผู้ใช้จากเบอร์โทร
     const user = await db.prepare('SELECT * FROM users WHERE phone_number = ? OR username = ?').bind(phone, phone).first();
     if (!user) {
       return c.json({ message: 'Phone number not found in the system. Please check again.' }, 404);
     }
 
-    // 2. อัปเดตรหัสผ่าน
-    await db.prepare('UPDATE users SET password = ? WHERE phone_number = ? OR username = ?').bind(newPassword, phone, phone).run();
+    // 🌟 ส่วนที่เพิ่มเข้ามา: ทำการเข้ารหัสผ่านใหม่ (Hash) ก่อนบันทึกลง Database
+    const salt = bcrypt.genSaltSync(10);
+    const hashedPassword = bcrypt.hashSync(newPassword, salt);
+
+    // 🌟 เปลี่ยนจากการเซฟ newPassword เป็น hashedPassword
+    await db.prepare('UPDATE users SET password = ? WHERE phone_number = ? OR username = ?')
+      .bind(hashedPassword, phone, phone)
+      .run();
 
     return c.json({ message: 'Password reset successfully' }, 200);
   } catch (error: any) {
