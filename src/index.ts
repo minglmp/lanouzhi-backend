@@ -582,20 +582,24 @@ app.get('/api/chat/unread/total', async (c) => {
 app.post('/api/auth/reset-password', async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const { username, newPassword } = await c.req.json();
+    const body = await c.req.json();
+    
+    // ดึงค่าเบอร์โทร (รองรับทั้งที่ส่งมาเป็น phone_number หรือ username)
+    const phone = body.phone_number || body.username;
+    const newPassword = body.newPassword;
 
-    if (!username || !newPassword) {
+    if (!phone || !newPassword) {
       return c.json({ message: 'Please provide phone number and new password' }, 400);
     }
 
-    // 1. เช็กว่าเบอร์โทรนี้มีอยู่ในระบบจริงไหม
-    const user = await db.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
+    // 1. ค้นหาผู้ใช้จากเบอร์โทร
+    const user = await db.prepare('SELECT * FROM users WHERE phone_number = ? OR username = ?').bind(phone, phone).first();
     if (!user) {
       return c.json({ message: 'Phone number not found in the system. Please check again.' }, 404);
     }
 
-    // 2. ทำการอัปเดตรหัสผ่านใหม่ (อิงจากเบอร์โทร)
-    await db.prepare('UPDATE users SET password = ? WHERE username = ?').bind(newPassword, username).run();
+    // 2. อัปเดตรหัสผ่าน
+    await db.prepare('UPDATE users SET password = ? WHERE phone_number = ? OR username = ?').bind(newPassword, phone, phone).run();
 
     return c.json({ message: 'Password reset successfully' }, 200);
   } catch (error: any) {
