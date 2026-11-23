@@ -1,20 +1,43 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { sign, verify, decode } from 'hono/jwt';
+import { sign, verify } from 'hono/jwt';
 import bcrypt from 'bcryptjs';
 
 // Define Types
-const app = new Hono<{ 
-  Bindings: { 
+type AuthUser = { userId: string; username: string; role: string; exp: number };
+
+const app = new Hono<{
+  Bindings: {
     makerspace_db: any;
-    IMAGE_BUCKET: R2Bucket; 
+    IMAGE_BUCKET: R2Bucket;
+    JWT_SECRET: string; // ตั้งค่าด้วย `wrangler secret put JWT_SECRET` (ห้ามใส่ในโค้ด)
   },
-  Variables: { user: any }
+  Variables: { user: AuthUser }
 }>();
 
 app.use('/*', cors());
 
-const SECRET_KEY = "super_secret_key";
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+
+// 🔐 ดึง secret จาก environment ถ้ายังไม่ได้ตั้งค่า ให้ error ทันที (ไม่มีค่า default)
+const getJwtSecret = (c: any): string => {
+  const secret = c.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET is not configured');
+  return secret;
+};
+
+// 🔐 ตรวจลายเซ็นและวันหมดอายุของ token จริง (ไม่ใช่แค่ decode)
+// คืนค่า null ถ้าไม่มี token หรือ token ไม่ถูกต้อง
+const getAuthUser = async (c: any): Promise<AuthUser | null> => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const secret = getJwtSecret(c);
+  try {
+    return (await verify(authHeader.slice(7), secret, 'HS256')) as unknown as AuthUser;
+  } catch {
+    return null;
+  }
+};
 
 // 🌟 Helper Function: ดึงชื่อไฟล์ออกจาก URL (เช่น ดึง '123-cat.jpg' ออกจาก 'https://pub-xxx.r2.dev/123-cat.jpg')
 const getFileNameFromUrl = (url: string) => {
@@ -27,18 +50,12 @@ const getFileNameFromUrl = (url: string) => {
 // Middleware for checking Token (Auth Guard)
 // ==========================================
 const authMiddleware = async (c: any, next: any) => {
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return c.json({ message: 'Please log in to continue' }, 401);
+  const user = await getAuthUser(c);
+  if (!user) {
+    return c.json({ message: 'Please log in to continue (invalid or expired token)' }, 401);
   }
-  const token = authHeader.split(' ')[1] as string; 
-  try {
-    const decodedPayload = await verify(token, SECRET_KEY, 'HS256');
-    c.set('user', decodedPayload); 
-    await next(); 
-  } catch (error: any) {
-    return c.json({ message: 'Invalid or expired token', error_detail: error.message, received_token: token }, 401);
-  }
+  c.set('user', user);
+  await next();
 };
 
 // ==========================================
@@ -72,14 +89,12 @@ app.get('/api/models/:id', async (c) => {
 // ==========================================
 // API to upload a new 3D model (Login required)
 // ==========================================
-app.post('/api/models', async (c) => {
+app.post('/api/models', authMiddleware, async (c) => {
   try {
     const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.split(' ')[1];
-    const { payload } = decode(token!);
+    const payload = c.get('user');
     const author = payload.username;
     const role = payload.role; // 🌟 ดึงสิทธิ์ (Role) ออกมาเช็ก
 
@@ -104,14 +119,12 @@ app.post('/api/models', async (c) => {
 // ==========================================
 // 🌟 API ลบโมเดล 3D (เพิ่มระบบลบไฟล์ใน R2)
 // ==========================================
-app.delete('/api/models/:id', async (c) => {
+app.delete('/api/models/:id', authMiddleware, async (c) => {
   try {
     const id = c.req.param('id');
     const db = c.env.makerspace_db;
 
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.split(' ')[1];
-    const { payload } = decode(token!);
+    const payload = c.get('user');
     const requester = payload.username;
     const role = payload.role;
 
@@ -144,16 +157,14 @@ app.delete('/api/models/:id', async (c) => {
 // ==========================================
 // 🌟 API แก้ไขโมเดล 3D (เพิ่มระบบเช็กลบไฟล์เก่าใน R2)
 // ==========================================
-app.put('/api/models/:id', async (c) => {
+app.put('/api/models/:id', authMiddleware, async (c) => {
   try {
     const id = c.req.param('id');
     // images ที่รับมาคือ "รูปรวมทั้งหมดที่ต้องการเก็บไว้ (รูปเก่าที่เหลือ + รูปใหม่)"
     const { title, images, category, description, price } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.split(' ')[1];
-    const { payload } = decode(token!);
+    const payload = c.get('user');
     const requester = payload.username;
     const role = payload.role;
 
@@ -194,16 +205,12 @@ app.put('/api/models/:id', async (c) => {
 // ==========================================
 // API สร้างออเดอร์ใหม่
 // ==========================================
-app.post('/api/orders', async (c) => {
+app.post('/api/orders', authMiddleware, async (c) => {
   try {
-    const { model_id } = await c.req.json(); 
+    const { model_id } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.split(' ')[1];
-    if (!token) return c.json({ message: 'Please login to order' }, 401);
-    
-    const { payload } = decode(token);
+    const payload = c.get('user');
     const buyer = payload.username;
     const orderId = (globalThis as any).crypto.randomUUID();
 
@@ -259,7 +266,7 @@ app.post('/api/auth/login', async (c) => {
       exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
     };
     
-    const token = await sign(payload, SECRET_KEY);
+    const token = await sign(payload, getJwtSecret(c), 'HS256');
 
     return c.json({ message: 'Login successful', token, user: { id: user.id, username: user.username, role: user.role }});
   } catch (error: any) {
@@ -270,14 +277,10 @@ app.post('/api/auth/login', async (c) => {
 // ==========================================
 // API ดึงรายการออเดอร์ (แยกสิทธิ์ Admin / User)
 // ==========================================
-app.get('/api/orders', async (c) => {
+app.get('/api/orders', authMiddleware, async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.split(' ')[1];
-    if (!token) return c.json({ message: 'Unauthorized' }, 401);
-
-    const { payload } = decode(token);
+    const payload = c.get('user');
     const role = payload.role;
     const username = payload.username;
 
@@ -316,15 +319,13 @@ app.get('/api/orders', async (c) => {
 // ==========================================
 // API สำหรับอัปเดตสถานะออเดอร์ (Approve / Reject)
 // ==========================================
-app.put('/api/orders/:id/status', async (c) => {
+app.put('/api/orders/:id/status', authMiddleware, async (c) => {
   try {
     const id = c.req.param('id');
     const { status } = await c.req.json();
     const db = c.env.makerspace_db;
 
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader?.split(' ')[1];
-    const { payload } = decode(token!);
+    const payload = c.get('user');
     if (payload.role !== 'admin') return c.json({ message: 'Forbidden' }, 403);
 
     await db.prepare('UPDATE orders SET status = ? WHERE id = ?').bind(status, id).run();
@@ -338,13 +339,24 @@ app.put('/api/orders/:id/status', async (c) => {
 // ==========================================
 // API สำหรับอัปโหลดรูปภาพไปที่ R2
 // ==========================================
-app.post('/api/upload', async (c) => {
+app.post('/api/upload', authMiddleware, async (c) => {
   try {
+    const role = c.get('user').role;
+    if (role !== 'admin' && role !== 'creator') {
+      return c.json({ message: 'Forbidden: Only Creators and Admins can upload images.' }, 403);
+    }
+
     const body = await c.req.parseBody();
-    const file = body['file'] as File;
-    
-    if (!file) {
+    const file = body['file'];
+
+    if (!file || typeof file === 'string') {
       return c.json({ error: 'No file uploaded' }, 400);
+    }
+    if (!file.type.startsWith('image/')) {
+      return c.json({ error: 'Only image files are allowed' }, 400);
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return c.json({ error: 'File is too large (max 10 MB)' }, 413);
     }
 
     const fileName = `${Date.now()}-${file.name.replace(/\s+/g, '_')}`;
@@ -370,17 +382,13 @@ app.get('/', (c) => {
 // ==========================================
 // API: กดไลก์ / ยกเลิกไลก์ โมเดล (Like & Unlike)
 // ==========================================
-app.post('/api/models/:id/like', async (c) => {
+app.post('/api/models/:id/like', authMiddleware, async (c) => {
   try {
     const db = c.env.makerspace_db;
     const modelId = c.req.param('id');
 
-    // เช็กการล็อกอิน (คนกดไลก์ต้องล็อกอินก่อน)
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ message: 'Please login to like' }, 401);
-    
-    const token = authHeader.split(' ')[1];
-    const { payload } = decode(token);
+    // เช็กการล็อกอิน (คนกดไลก์ต้องล็อกอินก่อน) — ตรวจโดย authMiddleware แล้ว
+    const payload = c.get('user');
     const username = payload.username;
 
     // เช็กว่าเคยกดไลก์ไปหรือยัง
@@ -415,13 +423,9 @@ app.post('/api/models/:id/like', async (c) => {
 app.get('/api/user/likes', async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const authHeader = c.req.header('Authorization');
-    
-    // ถ้าไม่ได้ล็อกอิน ไม่ต้องโชว์หัวใจแดง ส่ง Array เปล่าๆ กลับไป
-    if (!authHeader) return c.json([], 200);
-
-    const token = authHeader.split(' ')[1];
-    const { payload } = decode(token);
+    // ถ้าไม่ได้ล็อกอิน (หรือ token ไม่ถูกต้อง) ไม่ต้องโชว์หัวใจแดง ส่ง Array เปล่าๆ กลับไป
+    const payload = await getAuthUser(c);
+    if (!payload) return c.json([], 200);
     const username = payload.username;
 
     // ดึงเฉพาะไอดีโมเดลที่ยูสเซอร์คนนี้เคยกดไลก์
@@ -437,14 +441,10 @@ app.get('/api/user/likes', async (c) => {
 // ==========================================
 // API: ดึงรายละเอียดโมเดลที่กดไลก์ไว้ (My Favorites)
 // ==========================================
-app.get('/api/user/favorites', async (c) => {
+app.get('/api/user/favorites', authMiddleware, async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
-
-    const token = authHeader.split(' ')[1];
-    const { payload } = decode(token);
+    const payload = c.get('user');
     const username = payload.username;
 
     // ดึงข้อมูลโมเดล โดย JOIN กับตาราง likes เรียงลำดับจากที่เพิ่งกดไลก์ล่าสุด
@@ -468,13 +468,10 @@ app.get('/api/user/favorites', async (c) => {
 // ==========================================
 
 // 1. ดึงรายชื่อคนที่เคยคุยด้วย (พร้อมจำนวนข้อความที่ยังไม่ได้อ่าน)
-app.get('/api/chat/contacts', async (c) => {
+app.get('/api/chat/contacts', authMiddleware, async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
-    
-    const { payload } = decode(authHeader.split(' ')[1]);
+    const payload = c.get('user');
     const username = payload.username;
 
     // 🌟 เพิ่ม COLLATE NOCASE ตรง GROUP BY เพื่อให้มันยุบรวม Admin และ admin เป็นคนเดียวกัน
@@ -504,14 +501,11 @@ app.get('/api/chat/contacts', async (c) => {
 });
 
 // 2. ดึงประวัติการแชท (และอัปเดตสถานะว่า "อ่านแล้ว")
-app.get('/api/chat/:contact', async (c) => {
+app.get('/api/chat/:contact', authMiddleware, async (c) => {
   try {
     const db = c.env.makerspace_db;
     const contact = c.req.param('contact');
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
-    
-    const { payload } = decode(authHeader.split(' ')[1]);
+    const payload = c.get('user');
     const username = payload.username;
 
     // อัปเดตข้อความที่คนนี้ส่งมาหาเราให้เป็น "อ่านแล้ว"
@@ -534,13 +528,10 @@ app.get('/api/chat/:contact', async (c) => {
 });
 
 // 3. ส่งข้อความ
-app.post('/api/chat', async (c) => {
+app.post('/api/chat', authMiddleware, async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ message: 'Unauthorized' }, 401);
-    
-    const { payload } = decode(authHeader.split(' ')[1]);
+    const payload = c.get('user');
     const sender = payload.username;
     const { receiver, content } = await c.req.json();
 
@@ -559,10 +550,8 @@ app.post('/api/chat', async (c) => {
 app.get('/api/chat/unread/total', async (c) => {
   try {
     const db = c.env.makerspace_db;
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader) return c.json({ count: 0 }, 200);
-    
-    const { payload } = decode(authHeader.split(' ')[1]);
+    const payload = await getAuthUser(c);
+    if (!payload) return c.json({ count: 0 }, 200);
     const username = payload.username;
 
     const res = await db.prepare(`
@@ -579,8 +568,15 @@ app.get('/api/chat/unread/total', async (c) => {
 // ==========================================
 // API: Forgot Password (รีเซ็ตรหัสผ่าน)
 // ==========================================
+// 🔐 ยังไม่มีระบบยืนยันตัวตน (เช่น OTP ทาง SMS) จึงอนุญาตให้รีเซ็ตได้เฉพาะ Admin เท่านั้น
+// ไม่งั้นใครก็ตามที่รู้เบอร์โทร/username จะเปลี่ยนรหัสผ่านของคนอื่นได้
 app.post('/api/auth/reset-password', async (c) => {
   try {
+    const requester = await getAuthUser(c);
+    if (!requester || requester.role !== 'admin') {
+      return c.json({ message: 'Password reset is handled by an admin. Please contact Admin to reset your password.' }, 403);
+    }
+
     const db = c.env.makerspace_db;
     const body = await c.req.json();
     
